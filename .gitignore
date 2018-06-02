@@ -7,3 +7,4 @@ Mimir.iml
 .idea/inspectionProfiles/Project_Default.xml
 .idea/libraries/jasn1_custom.xml
 out/
+taps/
