@@ -1,4 +1,4 @@
-import java.io.{BufferedInputStream, FileInputStream}
+import java.io.{BufferedInputStream, File, FileInputStream}
 
 import org.openmuc.jasn1.ber.ReverseByteArrayOutputStream
 import tap.DataInterChange
@@ -6,8 +6,11 @@ import tap.DataInterChange
 object Main {
 
     def main(args: Array[String]): Unit = {
-        val path: String = "taps/CDGBRMENORNC07417"
-        process(path)
+        val path: String = "taps/"
+        val arr: Array[File] = new java.io.File(path).listFiles.filter(_.getName.startsWith("C"))
+        arr.foreach(file => {
+            process(path + file.getName)
+        })
     }
 
     def process(path: String): Unit = {
