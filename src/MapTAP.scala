@@ -8,9 +8,9 @@ class MapTAP {
         var sender: String = ""
         var recipient: String = ""
         var triggerTime: Long = 0
-        var utcTimeZone: String = "+0000"
-
         val tb: TransferBatch = dic.transferBatch
+        val fileTimeZone : String = "fileTZConst"
+        val timezoneMap = scala.collection.mutable.HashMap.empty[String, Long] // timediff [0] is fileCreationTimeStamp
 
         if (tb != null) {
             if (tb.batchControlInfo != null) {
@@ -21,12 +21,18 @@ class MapTAP {
                     recipient = hexToAscii(tb.batchControlInfo.recipient.toString)
 
                 if (tb.batchControlInfo.fileCreationTimeStamp != null) {
-                    utcTimeZone = hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.utcTimeOffset.toString)
+                    timezoneMap += (0.toString -> timezoneToLong(hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.utcTimeOffset.toString)))
                     if (tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp != null) {
                         // Triggertime comes in HEX in TAP files. We convert it to ASCII --> Date --> milliseconds.
                         val triggerTimeString = hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp.toString)
                         val triggerTimeDate = asciiToDate(triggerTimeString)
-                        triggerTime = dateToMillis(triggerTimeDate)
+                        triggerTime = dateToMillis(triggerTimeDate)+(if(timezoneMap.contains(fileTimeZone)) timezoneMap(fileTimeZone) else 0)
+                    }
+                }
+
+                if(tb.networkInfo != null && tb.networkInfo.utcTimeOffsetInfo != null){
+                    for (i <- 0 until tb.networkInfo.utcTimeOffsetInfo.seqOf.size) {
+                        timezoneMap += (tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffsetCode.toString -> timezoneToLong(hexToAscii(tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffset.toString)))
                     }
                 }
                 /*
@@ -50,10 +56,6 @@ class MapTAP {
                     var connectTime: Long = 0
                     var callDuration: Long = 0
                     var disconnectTime: Long = 0
-
-                    var timeZoneSign: String = ""
-                    var timezoneHour: Long = 0
-                    var timezoneMinute: Long = 0
 
                     val ced = tb.callEventDetails.seqOf.get(i) // To shorten the code a bit.
 
@@ -87,17 +89,20 @@ class MapTAP {
                                 if (mocBasicCallInfo.callEventStartTimeStamp.localTimeStamp != null) {
                                     val connectTimeString = hexToAscii(mocBasicCallInfo.callEventStartTimeStamp.localTimeStamp.toString)
                                     val connectTimeDate = asciiToDate(connectTimeString)
-                                    connectTime = dateToMillis(connectTimeDate)
+                                    val connectTimeCode =
+                                        if(mocBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode != null) {
+                                            mocBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode.toString
+                                        } else null // bad practice. Fix it!
 
-                                    timeZoneSign = utcTimeZone.substring(0, 1)
-                                    timezoneHour = utcTimeZone.substring(1, 3).toLong
-                                    timezoneMinute = utcTimeZone.substring(3, 5).toLong
-
-                                    if (timeZoneSign == "+") {
-                                        connectTime = connectTime + (timezoneHour * 3600000 + timezoneMinute * 60000)
-                                    } else if (timeZoneSign == "-") {
-                                        connectTime = connectTime - (timezoneHour * 3600000 + timezoneMinute * 60000)
-                                    }
+                                    val timediff =
+                                        if(connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
+                                            timezoneMap(connectTimeCode)
+                                        } else if(timezoneMap.contains(0.toString)) {
+                                            timezoneMap(0.toString)
+                                        } else {
+                                            0
+                                        }
+                                    connectTime = dateToMillis(connectTimeDate)+timediff
                                 }
                             }
 
@@ -142,9 +147,6 @@ class MapTAP {
                                 println("Calling: " + calling)
                                 println("Called: " + called)
                                 println("Connect time: " + connectTime)
-                                println("timeZoneSign: " + timeZoneSign)
-                                println("timezoneHour: " + timezoneHour)
-                                println("timezoneMinute: " + timezoneMinute)
                                 println("Connect time: " + connectTime)
                                 println("Connect time(fromunixUTC): " + fromUnixtime(connectTime))
                                 println("Call duration: " + callDuration)
@@ -179,19 +181,22 @@ class MapTAP {
                             }
 
                             if (mtcBasicCallInfo.callEventStartTimeStamp != null && mtcBasicCallInfo.callEventStartTimeStamp.localTimeStamp != null) {
-                                timeZoneSign = utcTimeZone.substring(0, 1)
-                                timezoneHour = utcTimeZone.substring(1, 3).toLong
-                                timezoneMinute = utcTimeZone.substring(3, 5).toLong
-
                                 val connectTimeString = hexToAscii(mtcBasicCallInfo.callEventStartTimeStamp.localTimeStamp.toString)
                                 val connectTimeDate = asciiToDate(connectTimeString)
-                                connectTime = dateToMillis(connectTimeDate)
+                                val connectTimeCode =
+                                    if(mtcBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode != null) {
+                                        mtcBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode.toString
+                                    } else null // bad practice. Fix it!
 
-                                if (timeZoneSign == "+") {
-                                    connectTime = connectTime + (timezoneHour * 3600000 + timezoneMinute * 60000)
-                                } else if (timeZoneSign == "-") {
-                                    connectTime = connectTime - (timezoneHour * 3600000 + timezoneMinute * 60000)
-                                }
+                                val timediff =
+                                    if(connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
+                                        timezoneMap(connectTimeCode)
+                                    } else if(timezoneMap.contains(0.toString)) {
+                                        timezoneMap(0.toString)
+                                    } else {
+                                        0
+                                    }
+                                connectTime = dateToMillis(connectTimeDate)+timediff
                             }
 
                             if (mtcBasicCallInfo.totalCallEventDuration != null) {
@@ -273,5 +278,22 @@ class MapTAP {
         val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
         val date: String = sdf.format(ts.toLong)
         date
+    }
+    /**
+      * Input: timezone in the format: "+0000"
+      * Returns: diff from UTC in milliseconds
+      * */
+    final def timezoneToLong(timezoneStr : String) : Long = {
+        var calculatedTimeZone : Long = 0
+        val timeZoneSign: String = timezoneStr.substring(0,1)
+        val timezoneHour: Long = timezoneStr.substring(1,3).toLong
+        val timezoneMinute: Long = timezoneStr.substring(3,5).toLong
+
+        if (timeZoneSign == "+") {
+            calculatedTimeZone -= (timezoneHour * 3600000 + timezoneMinute * 60000)
+        } else if (timeZoneSign == "-") {
+            calculatedTimeZone += (timezoneHour * 3600000 + timezoneMinute * 60000)
+        }
+        calculatedTimeZone
     }
 }
