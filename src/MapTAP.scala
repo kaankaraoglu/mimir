@@ -1,5 +1,6 @@
-import java.text.SimpleDateFormat
 import java.util.Date
+import java.text.SimpleDateFormat
+import java.util.Calendar
 
 import tap.{DataInterChange, TransferBatch}
 
@@ -21,27 +22,29 @@ class MapTAP {
                     recipient = hexToAscii(tb.batchControlInfo.recipient.toString)
 
                 if (tb.batchControlInfo.fileCreationTimeStamp != null) {
-                    timezoneMap += (0.toString -> timezoneToLong(hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.utcTimeOffset.toString)))
+                    timezoneMap += (fileTimeZone -> timezoneToLong(hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.utcTimeOffset.toString)))
                     if (tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp != null) {
                         // Triggertime comes in HEX in TAP files. We convert it to ASCII --> Date --> milliseconds.
                         val triggerTimeString = hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp.toString)
-                        val triggerTimeDate = asciiToDate(triggerTimeString)
-                        triggerTime = dateToMillis(triggerTimeDate)+(if(timezoneMap.contains(fileTimeZone)) timezoneMap(fileTimeZone) else 0)
+                        var triggerTimeDate = asciiToDate(triggerTimeString)
+                        triggerTime = dateToMillis(triggerTimeDate) + (if(timezoneMap.contains(fileTimeZone)) timezoneMap(fileTimeZone) else 0)
+                        triggerTimeDate = Calendar.getInstance.getTime
+                        val df = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss")
+                        println("TriggerTime " + df.format(triggerTimeDate))
                     }
                 }
 
-                if(tb.networkInfo != null && tb.networkInfo.utcTimeOffsetInfo != null){
+                if (tb.networkInfo != null && tb.networkInfo.utcTimeOffsetInfo != null){
                     for (i <- 0 until tb.networkInfo.utcTimeOffsetInfo.seqOf.size) {
                         timezoneMap += (tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffsetCode.toString -> timezoneToLong(hexToAscii(tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffset.toString)))
                     }
                 }
-                /*
-                  println("HEADER")
-                  println("TransferBatch -> BatchControlInfo")
-                  println("Sender: " + sender)
-                  println("Recipient: " + recipient)
-                  println("Timezone: " + utcTimeZone + "\n")
-                  */
+
+                println("HEADER")
+                //println("TransferBatch -> BatchControlInfo")
+                println("Sender: " + sender)
+                println("Recipient: " + recipient + "\n")
+                //println("Timezone: " + fileTimeZone + "\n")
             }
 
             if (tb.callEventDetails != null) {
@@ -74,15 +77,15 @@ class MapTAP {
 
                                     if (mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn != null) {
                                         calling = mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn.toString
-                                        println(calling.replaceAll("F",""))
-                                    } else println("Calling is missing")
+                                        //println(calling.replaceAll("F",""))
+                                    } //else println("Calling is missing")
                                 }
                             }
 
                             if (mocBasicCallInfo.destination != null) {
                                 if (mocBasicCallInfo.destination.calledNumber != null) {
                                     called = mocBasicCallInfo.destination.calledNumber.toString
-                                } else println("Called is missing")
+                                } //else println("Called is missing")
                             }
 
                             if (mocBasicCallInfo.callEventStartTimeStamp != null) {
@@ -97,8 +100,8 @@ class MapTAP {
                                     val timediff =
                                         if(connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
                                             timezoneMap(connectTimeCode)
-                                        } else if(timezoneMap.contains(0.toString)) {
-                                            timezoneMap(0.toString)
+                                        } else if(timezoneMap.contains(fileTimeZone)) {
+                                            timezoneMap(fileTimeZone)
                                         } else {
                                             0
                                         }
@@ -140,17 +143,16 @@ class MapTAP {
                             }
                             if (true) {
                                 println("TransferBatch -> CallEventDetails -> MobileOriginatedCall")
-                                println("Type Info: " + typeInfo)
-                                println("Event Type: " + eventType)
-                                println("Recipient: " + recipient)
+                                //println("Type Info: " + typeInfo)
+                                //println("Event Type: " + eventType)
+                                //println("Recipient: " + recipient)
                                 println("IMSI : " + imsi)
-                                println("Calling: " + calling)
-                                println("Called: " + called)
-                                println("Connect time: " + connectTime)
-                                println("Connect time: " + connectTime)
+                                //println("Calling: " + calling)
+                                //println("Called: " + called)
+                                //println("Connect time: " + connectTime)
                                 println("Connect time(fromunixUTC): " + fromUnixtime(connectTime))
                                 println("Call duration: " + callDuration)
-                                println("Disconnect time: " + disconnectTime)
+                                //println("Disconnect time: " + disconnectTime)
                                 println("Disconnect time(fromunixUTC): " + fromUnixtime(disconnectTime))
                                 println("Trigger Time " + triggerTime + "\n")
                             }
@@ -177,7 +179,7 @@ class MapTAP {
                             if (mtcBasicCallInfo.callOriginator != null) {
                                 if (mtcBasicCallInfo.callOriginator.callingNumber != null) {
                                     calling = mtcBasicCallInfo.callOriginator.callingNumber.toString
-                                } else println("Calling is missing")
+                                } //else println("Calling is missing")
                             }
 
                             if (mtcBasicCallInfo.callEventStartTimeStamp != null && mtcBasicCallInfo.callEventStartTimeStamp.localTimeStamp != null) {
@@ -191,8 +193,8 @@ class MapTAP {
                                 val timediff =
                                     if(connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
                                         timezoneMap(connectTimeCode)
-                                    } else if(timezoneMap.contains(0.toString)) {
-                                        timezoneMap(0.toString)
+                                    } else if(timezoneMap.contains(fileTimeZone)) {
+                                        timezoneMap(fileTimeZone)
                                     } else {
                                         0
                                     }
@@ -229,7 +231,7 @@ class MapTAP {
                                 }
                             }
 
-                            if (true) {
+                            if (false) {
                                 println("TransferBatch -> CallEventDetails -> MobileTerminatedCall")
                                 println("Type Info: " + typeInfo)
                                 println("Event Type: " + eventType)
