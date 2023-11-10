@@ -1,10 +1,4 @@
 Mimir.iml
-.idea/.name
-.idea/hydra.xml
-.idea/misc.xml
-.idea/modules.xml
-.idea/workspace.xml
-.idea/inspectionProfiles/Project_Default.xml
-.idea/libraries/jasn1_custom.xml
+.idea
 out/
 taps/
