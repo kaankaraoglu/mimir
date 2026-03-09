@@ -1,34 +1,32 @@
-import org.openmuc.jasn1.ber.ReverseByteArrayOutputStream
 import tap.DataInterChange
 
 import java.io.{BufferedInputStream, File, FileInputStream}
+import scala.util.Using
 
 object Main {
 
   def main(args: Array[String]): Unit = {
-    val path: String = "taps/"
-    val arr: Array[File] = new File(path).listFiles.filter(_.getName.startsWith("C"))
-    arr.foreach(file => {
-      process(path + file.getName)
-    })
+    val path = args.headOption.getOrElse("taps/")
+    val dir = new File(path)
+    if (!dir.isDirectory) {
+      println(s"Directory not found: $path")
+      return
+    }
+    val files = Option(dir.listFiles).getOrElse(Array.empty[File]).filter(_.getName.startsWith("C"))
+    files.foreach(file => process(file.getAbsolutePath))
   }
 
   private def process(path: String): Unit = {
-    val rt: DataInterChange = decodeTap(loadFile(path))
+    val dic = Using.resource(new BufferedInputStream(new FileInputStream(path))) { is =>
+      decodeTap(is)
+    }
     val mapper = new TapMapper
-    mapper.map(rt)
+    mapper.map(dic)
   }
 
   private def decodeTap(is: BufferedInputStream): DataInterChange = {
-    val dic: DataInterChange = new DataInterChange()
-    val codeLength: Int = dic.decode(is, null)
-    val os: ReverseByteArrayOutputStream = new ReverseByteArrayOutputStream(codeLength, true)
-    dic.encode(os)
+    val dic = new DataInterChange()
+    dic.decode(is, null)
     dic
-  }
-
-  private def loadFile(path: String): BufferedInputStream = {
-    val br: BufferedInputStream = new BufferedInputStream(new FileInputStream(path))
-    br
   }
 }
