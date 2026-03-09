@@ -1,256 +1,221 @@
 import MapperUtils._
-import tap.{DataInterChange, TransferBatch}
-
-import java.text.SimpleDateFormat
-import java.util.Calendar
+import tap.{CallEventDetail, DataInterChange}
 
 class TapMapper {
-  def map(dic: DataInterChange): Unit = {
-    var sender: String = ""
-    var recipient: String = ""
-    var triggerTime: Long = 0
-    val tb: TransferBatch = dic.transferBatch
-    val fileTimeZone: String = "fileTZConst"
-    val timezoneMap = scala.collection.mutable.HashMap.empty[String, Long] // timediff [0] is fileCreationTimeStamp
 
-    if (tb != null) {
-      if (tb.batchControlInfo != null) {
-        if (tb.batchControlInfo.sender != null)
-          sender = hexToAscii(tb.batchControlInfo.sender.toString)
+  private val FileTimezoneKey = "fileTZConst"
 
-        if (tb.batchControlInfo.recipient != null)
-          recipient = hexToAscii(tb.batchControlInfo.recipient.toString)
+  def map(dic: DataInterChange): Seq[CallEvent] = {
+    val tb = dic.transferBatch
+    if (tb == null) return Seq.empty
 
-        if (tb.batchControlInfo.fileCreationTimeStamp != null) {
-          timezoneMap += (fileTimeZone -> timezoneToLong(hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.utcTimeOffset.toString)))
-          if (tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp != null) {
-            // Triggertime comes in HEX in TAP files. We convert it to ASCII --> Date --> milliseconds.
-            val triggerTimeString = hexToAscii(tb.batchControlInfo.fileCreationTimeStamp.localTimeStamp.toString)
-            var triggerTimeDate = asciiToDate(triggerTimeString)
-            triggerTime = dateToMillis(triggerTimeDate) + (if (timezoneMap.contains(fileTimeZone)) timezoneMap(fileTimeZone) else 0)
-            triggerTimeDate = Calendar.getInstance.getTime
-            val df = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss")
-            println("TriggerTime " + df.format(triggerTimeDate))
-          }
-        }
+    val header = extractHeader(tb)
+    val events = extractCallEvents(tb, header)
 
-        if (tb.networkInfo != null && tb.networkInfo.utcTimeOffsetInfo != null) {
-          for (i <- 0 until tb.networkInfo.utcTimeOffsetInfo.seqOf.size) {
-            timezoneMap += (tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffsetCode.toString -> timezoneToLong(hexToAscii(tb.networkInfo.utcTimeOffsetInfo.seqOf.get(i).utcTimeOffset.toString)))
-          }
-        }
+    printHeader(header)
+    events.foreach(printCallEvent)
 
-        println("HEADER")
-        println("TransferBatch -> BatchControlInfo")
-        println("Sender: " + sender)
-        println("Recipient: " + recipient + "\n")
-        println("Timezone: " + fileTimeZone + "\n")
-      }
+    events
+  }
 
-      if (tb.callEventDetails != null) {
-        val cedSize = tb.callEventDetails.seqOf.size()
-        for (i <- 0 until cedSize) {
-          var imsi: String = ""
-          var called: String = ""
-          var calling: String = ""
-          var typeInfo: Byte = 0
-          var eventType: Byte = 0
+  private def extractHeader(tb: tap.TransferBatch): BatchHeader = {
+    val bci = tb.batchControlInfo
+    if (bci == null) return BatchHeader("", "", 0L, Map.empty)
 
-          var connectTime: Long = 0
-          var callDuration: Long = 0
-          var disconnectTime: Long = 0
+    val sender = Option(bci.sender).map(s => hexToAscii(s.toString)).getOrElse("")
+    val recipient = Option(bci.recipient).map(r => hexToAscii(r.toString)).getOrElse("")
 
-          val ced = tb.callEventDetails.seqOf.get(i) // To shorten the code a bit.
+    val (triggerTime, fileTimezoneOffset) = extractFileTimestamp(bci)
+    val networkOffsets = extractNetworkTimezones(tb)
+    val allOffsets = fileTimezoneOffset.map(o => networkOffsets + (FileTimezoneKey -> o)).getOrElse(networkOffsets)
 
-          // TransferBatch -> CallEventDetails -> MobileOriginatedCall
-          if (ced.mobileOriginatedCall != null) {
-            if (ced.mobileOriginatedCall.basicCallInformation != null) {
-              typeInfo = 1
-              eventType = 1
-              val mocBasicCallInfo = ced.mobileOriginatedCall.basicCallInformation
+    BatchHeader(sender, recipient, triggerTime, allOffsets)
+  }
 
-              if (mocBasicCallInfo.chargeableSubscriber != null) {
-                if (mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber != null) {
-                  if (mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.imsi != null) {
-                    imsi = mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.imsi.toString.substring(0, 15)
-                  }
+  private def extractFileTimestamp(bci: tap.BatchControlInfo): (Long, Option[Long]) = {
+    val fcts = Option(bci.fileCreationTimeStamp).getOrElse(return (0L, None))
+    val offset = Option(fcts.utcTimeOffset).map(o => timezoneToOffsetMillis(hexToAscii(o.toString)))
+    val triggerTime = for {
+      lts <- Option(fcts.localTimeStamp)
+      millis <- asciiToEpochMillis(hexToAscii(lts.toString))
+    } yield millis + offset.getOrElse(0L)
 
-                  if (mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn != null) {
-                    calling = mocBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn.toString
-                    //println(calling.replaceAll("F",""))
-                  } //else println("Calling is missing")
-                }
-              }
+    (triggerTime.getOrElse(0L), offset)
+  }
 
-              if (mocBasicCallInfo.destination != null) {
-                if (mocBasicCallInfo.destination.calledNumber != null) {
-                  called = mocBasicCallInfo.destination.calledNumber.toString
-                } //else println("Called is missing")
-              }
+  private def extractNetworkTimezones(tb: tap.TransferBatch): Map[String, Long] = {
+    val info = Option(tb.networkInfo).flatMap(n => Option(n.utcTimeOffsetInfo))
+    info.map { utcInfo =>
+      (0 until utcInfo.seqOf.size).map { i =>
+        val entry = utcInfo.seqOf.get(i)
+        entry.utcTimeOffsetCode.toString -> timezoneToOffsetMillis(hexToAscii(entry.utcTimeOffset.toString))
+      }.toMap
+    }.getOrElse(Map.empty)
+  }
 
-              if (mocBasicCallInfo.callEventStartTimeStamp != null) {
-                if (mocBasicCallInfo.callEventStartTimeStamp.localTimeStamp != null) {
-                  val connectTimeString = hexToAscii(mocBasicCallInfo.callEventStartTimeStamp.localTimeStamp.toString)
-                  val connectTimeDate = asciiToDate(connectTimeString)
-                  val connectTimeCode =
-                    if (mocBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode != null) {
-                      mocBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode.toString
-                    } else {
-                      ""
-                    }
+  private def extractCallEvents(tb: tap.TransferBatch, header: BatchHeader): Seq[CallEvent] = {
+    if (tb.callEventDetails == null) return Seq.empty
 
-                  val timediff =
-                    if (connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
-                      timezoneMap(connectTimeCode)
-                    } else if (timezoneMap.contains(fileTimeZone)) {
-                      timezoneMap(fileTimeZone)
-                    } else {
-                      0
-                    }
-                  connectTime = dateToMillis(connectTimeDate) + timediff
-                }
-              }
-
-              if (mocBasicCallInfo.totalCallEventDuration.toString != null) {
-                // This comes in as seconds.
-                // We need it to be in milliseconds so that we can add it to connect time.
-                val callDurationString = mocBasicCallInfo.totalCallEventDuration.toString
-                val callDurationInSeconds = callDurationString.toLong
-                val callDurationInMillis = callDurationInSeconds * 1000
-                callDuration = callDurationInMillis
-              }
-
-              if (connectTime != 0) {
-                if (callDuration != 0) {
-                  disconnectTime = connectTime + callDuration
-                } else {
-                  disconnectTime = connectTime
-                }
-              }
-
-              if (connectTime > disconnectTime) {
-                println("Bad data!")
-              }
-
-              if (ced.mobileOriginatedCall.basicServiceUsedList != null) {
-                for (j <- 0 until ced.mobileOriginatedCall.basicServiceUsedList.seqOf.size) {
-                  val li = ced.mobileOriginatedCall.basicServiceUsedList.seqOf.get(j)
-                  if (li.basicService.serviceCode.teleServiceCode != null) {
-                    val teleService = hexToAscii(li.basicService.serviceCode.teleServiceCode.toString)
-                    if (teleService.equals("22")) {
-                      eventType = 2
-                    }
-                  }
-                }
-              }
-              if (true) {
-                println("TransferBatch -> CallEventDetails -> MobileOriginatedCall")
-                println("Type Info: " + typeInfo)
-                println("Event Type: " + eventType)
-                println("Recipient: " + recipient)
-                println("IMSI : " + imsi)
-                println("Calling: " + calling)
-                println("Called: " + called)
-                println("Connect time: " + connectTime)
-                println("Connect time(fromunixUTC): " + dateFromUnixtime(connectTime))
-                println("Call duration: " + callDuration)
-                println("Disconnect time: " + disconnectTime)
-                println("Disconnect time(fromunixUTC): " + dateFromUnixtime(disconnectTime))
-                println("Trigger Time " + triggerTime + "\n")
-              }
-            }
-          }
-
-          // TransferBatch -> CallEventDetails -> MobileTerminatedCall
-          else if (ced.mobileTerminatedCall != null) {
-            if (ced.mobileTerminatedCall.basicCallInformation != null) {
-              typeInfo = 2
-              eventType = 1
-              val mtcBasicCallInfo = ced.mobileTerminatedCall.basicCallInformation
-
-              if (mtcBasicCallInfo.chargeableSubscriber != null && mtcBasicCallInfo.chargeableSubscriber.simChargeableSubscriber != null) {
-                if (mtcBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.imsi != null) {
-                  imsi = mtcBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.imsi.toString.substring(0, 15)
-                }
-
-                if (mtcBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn != null) {
-                  called = mtcBasicCallInfo.chargeableSubscriber.simChargeableSubscriber.msisdn.toString
-                }
-              }
-
-              if (mtcBasicCallInfo.callOriginator != null) {
-                if (mtcBasicCallInfo.callOriginator.callingNumber != null) {
-                  calling = mtcBasicCallInfo.callOriginator.callingNumber.toString
-                } //else println("Calling is missing")
-              }
-
-              if (mtcBasicCallInfo.callEventStartTimeStamp != null && mtcBasicCallInfo.callEventStartTimeStamp.localTimeStamp != null) {
-                val connectTimeString = hexToAscii(mtcBasicCallInfo.callEventStartTimeStamp.localTimeStamp.toString)
-                val connectTimeDate = asciiToDate(connectTimeString)
-                val connectTimeCode =
-                  if (mtcBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode != null) {
-                    mtcBasicCallInfo.callEventStartTimeStamp.utcTimeOffsetCode.toString
-                  } else null // bad practice. Fix it!
-
-                val timediff =
-                  if (connectTimeCode != null && timezoneMap.contains(connectTimeCode)) {
-                    timezoneMap(connectTimeCode)
-                  } else if (timezoneMap.contains(fileTimeZone)) {
-                    timezoneMap(fileTimeZone)
-                  } else {
-                    0
-                  }
-                connectTime = dateToMillis(connectTimeDate) + timediff
-              }
-
-              if (mtcBasicCallInfo.totalCallEventDuration != null) {
-                val callDurationString = mtcBasicCallInfo.totalCallEventDuration.toString
-                val callDurationInSeconds = callDurationString.toLong
-                callDuration = callDurationInSeconds * 1000
-              }
-
-              if (callDuration != 0) {
-                disconnectTime = connectTime + callDuration
-              } else {
-                disconnectTime = connectTime
-              }
-
-              if (connectTime > disconnectTime) {
-                println("Bad data!")
-              }
-
-              if (connectTime == 0) println("connect time zero!")
-
-              if (ced.mobileTerminatedCall.basicServiceUsedList != null) {
-                for (j <- 0 until ced.mobileTerminatedCall.basicServiceUsedList.seqOf.size) {
-                  val li = ced.mobileTerminatedCall.basicServiceUsedList.seqOf.get(j)
-                  if (li.basicService.serviceCode.teleServiceCode != null) {
-                    val teleService = hexToAscii(li.basicService.serviceCode.teleServiceCode.toString)
-                    if (teleService.equals("21")) {
-                      eventType = 2
-                    }
-                  }
-                }
-              }
-
-              //              if (false) {
-              //                println("TransferBatch -> CallEventDetails -> MobileTerminatedCall")
-              //                println("Type Info: " + typeInfo)
-              //                println("Event Type: " + eventType)
-              //                println("Recipient: " + recipient)
-              //                println("IMSI : " + imsi)
-              //                println("Calling: " + calling)
-              //                println("Connect time: " + connectTime)
-              //                println("Connect time(fromunix_UTC): " + dateFromUnixtime(connectTime))
-              //                println("Call duration: " + callDuration)
-              //                println("Disconnect time: " + disconnectTime)
-              //                println("Disconnect time(fromunixUTC): " + dateFromUnixtime(disconnectTime))
-              //                println("Trigger Time " + triggerTime + "\n")
-              //              }
-            }
-          }
-        }
-      }
+    (0 until tb.callEventDetails.seqOf.size).flatMap { i =>
+      val ced = tb.callEventDetails.seqOf.get(i)
+      if (ced.mobileOriginatedCall != null)
+        extractOriginatedCall(ced, header)
+      else if (ced.mobileTerminatedCall != null)
+        extractTerminatedCall(ced, header)
+      else
+        None
     }
+  }
+
+  private def extractOriginatedCall(ced: CallEventDetail, header: BatchHeader): Option[CallEvent] = {
+    val moc = ced.mobileOriginatedCall
+    val info = Option(moc.basicCallInformation).getOrElse(return None)
+
+    val (imsi, calling) = extractSimSubscriber(
+      Option(info.chargeableSubscriber).flatMap(cs => Option(cs.simChargeableSubscriber))
+    )
+
+    val called = for {
+      dest <- Option(info.destination)
+      num <- Option(dest.calledNumber)
+    } yield num.toString
+
+    val connectTime = resolveConnectTime(
+      Option(info.callEventStartTimeStamp),
+      header.timezoneOffsets
+    )
+
+    val callDuration = Option(info.totalCallEventDuration)
+      .map(_.toString.toLong * 1000)
+      .getOrElse(0L)
+
+    val eventType = resolveEventType(
+      Option(moc.basicServiceUsedList),
+      smsCode = "22"
+    )
+
+    val disconnectTime = if (connectTime != 0) connectTime + callDuration else 0L
+
+    Some(CallEvent(
+      typeInfo = 1,
+      eventType = eventType,
+      recipient = header.recipient,
+      imsi = imsi,
+      calling = calling,
+      called = called.getOrElse(""),
+      connectTimeMillis = connectTime,
+      callDurationMillis = callDuration,
+      disconnectTimeMillis = disconnectTime,
+      triggerTimeMillis = header.triggerTimeMillis
+    ))
+  }
+
+  private def extractTerminatedCall(ced: CallEventDetail, header: BatchHeader): Option[CallEvent] = {
+    val mtc = ced.mobileTerminatedCall
+    val info = Option(mtc.basicCallInformation).getOrElse(return None)
+
+    val (imsi, called) = extractSimSubscriber(
+      Option(info.chargeableSubscriber).flatMap(cs => Option(cs.simChargeableSubscriber))
+    )
+
+    val calling = for {
+      orig <- Option(info.callOriginator)
+      num <- Option(orig.callingNumber)
+    } yield num.toString
+
+    val connectTime = resolveConnectTime(
+      Option(info.callEventStartTimeStamp),
+      header.timezoneOffsets
+    )
+
+    val callDuration = Option(info.totalCallEventDuration)
+      .map(_.toString.toLong * 1000)
+      .getOrElse(0L)
+
+    val eventType = resolveEventType(
+      Option(mtc.basicServiceUsedList),
+      smsCode = "21"
+    )
+
+    val disconnectTime = if (connectTime != 0) connectTime + callDuration else 0L
+
+    Some(CallEvent(
+      typeInfo = 2,
+      eventType = eventType,
+      recipient = header.recipient,
+      imsi = imsi,
+      calling = calling.getOrElse(""),
+      called = called,
+      connectTimeMillis = connectTime,
+      callDurationMillis = callDuration,
+      disconnectTimeMillis = disconnectTime,
+      triggerTimeMillis = header.triggerTimeMillis
+    ))
+  }
+
+  private def extractSimSubscriber(
+    simOpt: Option[tap.SimChargeableSubscriber]
+  ): (String, String) = {
+    val imsi = simOpt.flatMap(s => Option(s.imsi)).map(_.toString.take(15)).getOrElse("")
+    val msisdn = simOpt.flatMap(s => Option(s.msisdn)).map(_.toString).getOrElse("")
+    (imsi, msisdn)
+  }
+
+  private def resolveConnectTime(
+    timestampOpt: Option[tap.DateTime],
+    timezoneOffsets: Map[String, Long]
+  ): Long = {
+    val ts = timestampOpt.getOrElse(return 0L)
+    val localTs = Option(ts.localTimeStamp).getOrElse(return 0L)
+
+    val millis = asciiToEpochMillis(hexToAscii(localTs.toString)).getOrElse(return 0L)
+
+    val offsetCode = Option(ts.utcTimeOffsetCode).map(_.toString).getOrElse("")
+    val offset = timezoneOffsets.getOrElse(offsetCode,
+      timezoneOffsets.getOrElse(FileTimezoneKey, 0L)
+    )
+
+    millis + offset
+  }
+
+  private def resolveEventType(
+    serviceListOpt: Option[tap.BasicServiceUsedList],
+    smsCode: String
+  ): Byte = {
+    serviceListOpt.map { serviceList =>
+      val isSms = (0 until serviceList.seqOf.size).exists { j =>
+        val code = Option(serviceList.seqOf.get(j).basicService.serviceCode.teleServiceCode)
+        code.exists(c => hexToAscii(c.toString) == smsCode)
+      }
+      if (isSms) 2.toByte else 1.toByte
+    }.getOrElse(1.toByte)
+  }
+
+  private def printHeader(header: BatchHeader): Unit = {
+    println("HEADER")
+    println("TransferBatch -> BatchControlInfo")
+    println(s"Sender: ${header.sender}")
+    println(s"Recipient: ${header.recipient}")
+    println(s"Trigger Time: ${if (header.triggerTimeMillis > 0) formatEpochMillis(header.triggerTimeMillis) else "N/A"}")
+    println()
+  }
+
+  private def printCallEvent(event: CallEvent): Unit = {
+    val direction = if (event.typeInfo == 1) "MobileOriginatedCall" else "MobileTerminatedCall"
+    println(s"TransferBatch -> CallEventDetails -> $direction")
+    println(s"Type Info: ${event.typeInfo}")
+    println(s"Event Type: ${event.eventType}")
+    println(s"Recipient: ${event.recipient}")
+    println(s"IMSI: ${event.imsi}")
+    println(s"Calling: ${event.calling}")
+    println(s"Called: ${event.called}")
+    println(s"Connect time: ${event.connectTimeMillis}")
+    println(s"Connect time (UTC): ${formatEpochMillis(event.connectTimeMillis)}")
+    println(s"Call duration: ${event.callDurationMillis}")
+    println(s"Disconnect time: ${event.disconnectTimeMillis}")
+    println(s"Disconnect time (UTC): ${formatEpochMillis(event.disconnectTimeMillis)}")
+    println(s"Trigger Time: ${event.triggerTimeMillis}")
+    if (!event.isValid) println("WARNING: Invalid event data")
+    println()
   }
 }

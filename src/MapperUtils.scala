@@ -1,53 +1,51 @@
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.{Instant, LocalDateTime, ZoneOffset}
+import java.time.format.DateTimeFormatter
 
 object MapperUtils {
-  // Use this function if ONLY your date is in the format of "yyyyMMddHHmmss"
-  final def asciiToDate(date: String): Date = {
-    var result: Date = null
-    val sdf = new SimpleDateFormat("yyyyMMddHHmmss")
+
+  private val tapDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+  private val displayFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+  /** Parse a TAP-format date string ("yyyyMMddHHmmss") into epoch millis at UTC. */
+  final def asciiToEpochMillis(date: String): Option[Long] = {
     if (date != null && date.length == 14) {
-      result = sdf.parse(date)
+      val ldt = LocalDateTime.parse(date, tapDateFormat)
+      Some(ldt.toInstant(ZoneOffset.UTC).toEpochMilli)
+    } else {
+      None
     }
-    result
   }
 
-  final def dateToMillis(date: Date): Long = {
-    date.getTime
+  /** Format epoch millis as a human-readable UTC datetime string. */
+  final def formatEpochMillis(millis: Long): String = {
+    val instant = Instant.ofEpochMilli(millis)
+    displayFormat.format(instant.atZone(ZoneOffset.UTC))
   }
 
-  final def dateFromUnixtime(millis: Long): String = {
-    val ts: BigInt = millis
-    val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-    val date: String = sdf.format(ts.toLong)
-    date
-  }
-
+  /** Decode a hex-encoded string to its ASCII representation. */
   final def hexToAscii(hex: String): String = {
-    val sb = new StringBuilder
+    val sb = new StringBuilder(hex.length / 2)
     for (i <- 0 until hex.length by 2) {
-      val str = hex.substring(i, i + 2)
-      sb.append(Integer.parseInt(str, 16).toChar)
+      sb.append(Integer.parseInt(hex.substring(i, i + 2), 16).toChar)
     }
     sb.toString
   }
 
   /**
-   * Input: timezone in the format: "+0000"
-   * Returns: diff from UTC in milliseconds
-   * */
-  final def timezoneToLong(timezoneStr: String): Long = {
-    var calculatedTimeZone: Long = 0
-    val timeZoneSign: String = timezoneStr.substring(0, 1)
-    val timezoneHour: Long = timezoneStr.substring(1, 3).toLong
-    val timezoneMinute: Long = timezoneStr.substring(3, 5).toLong
+   * Convert a timezone string (e.g. "+0200", "-0530") to a UTC offset in milliseconds.
+   * The returned value is the adjustment needed to convert local time to UTC:
+   *   utcMillis = localMillis + timezoneToOffsetMillis(tz)
+   */
+  final def timezoneToOffsetMillis(timezoneStr: String): Long = {
+    val sign = timezoneStr.charAt(0)
+    val hours = timezoneStr.substring(1, 3).toLong
+    val minutes = timezoneStr.substring(3, 5).toLong
+    val totalMillis = hours * 3600000 + minutes * 60000
 
-    if (timeZoneSign == "+") {
-      calculatedTimeZone -= (timezoneHour * 3600000 + timezoneMinute * 60000)
-    } else if (timeZoneSign == "-") {
-      calculatedTimeZone += (timezoneHour * 3600000 + timezoneMinute * 60000)
+    sign match {
+      case '+' => -totalMillis
+      case '-' => totalMillis
+      case _   => 0L
     }
-    calculatedTimeZone
   }
-
 }
